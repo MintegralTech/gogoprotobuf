@@ -1,4 +1,4 @@
-module github.com/gogo/protobuf
+module github.com/MintegralTech/gogoprotobuf
 
 require (
 	github.com/kisielk/errcheck v1.2.0 // indirect
