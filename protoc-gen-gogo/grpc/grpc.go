@@ -52,10 +52,14 @@ const generatedCodeVersion = 4
 // Paths for packages used by code generated in this file,
 // relative to the import_prefix of the generator.Generator.
 const (
-	contextPkgPath = "context"
-	grpcPkgPath    = "google.golang.org/grpc"
-	codePkgPath    = "google.golang.org/grpc/codes"
-	statusPkgPath  = "google.golang.org/grpc/status"
+	contextPkgPath  = "context"
+	grpcPkgPath     = "google.golang.org/grpc"
+	codePkgPath     = "google.golang.org/grpc/codes"
+	statusPkgPath   = "google.golang.org/grpc/status"
+	balancerPackage = "gitlab.mobvista.com/voyager/mrpc/balancer"
+	mrpcPackage     = "gitlab.mobvista.com/voyager/mrpc"
+	metricsPackage  = "gitlab.mobvista.com/voyager/mrpc/metrics"
+	timePackage     = "time"
 )
 
 func init() {
@@ -77,8 +81,12 @@ func (g *grpc) Name() string {
 // They may vary from the final path component of the import path
 // if the name is used by other packages.
 var (
-	contextPkg string
-	grpcPkg    string
+	contextPkg  string
+	grpcPkg     string
+	balancerPkg string
+	mrpcPkg     string
+	metricsPkg  string
+	timePkg     string
 )
 
 // Init initializes the plugin.
@@ -109,6 +117,10 @@ func (g *grpc) Generate(file *generator.FileDescriptor) {
 
 	contextPkg = string(g.gen.AddImport(contextPkgPath))
 	grpcPkg = string(g.gen.AddImport(grpcPkgPath))
+	balancerPkg = string(g.gen.AddImport(balancerPackage))
+	mrpcPkg = string(g.gen.AddImport(mrpcPackage))
+	metricsPkg = string(g.gen.AddImport(metricsPackage))
+	timePkg = string(g.gen.AddImport(timePackage))
 
 	g.P("// Reference imports to suppress errors if they are not otherwise used.")
 	g.P("var _ ", contextPkg, ".Context")
@@ -176,12 +188,28 @@ func (g *grpc) generateService(file *generator.FileDescriptor, service *pb.Servi
 	g.P("}")
 	g.P()
 
+	// Client structure.
+	g.P("type ", unexport(servName), "Pool struct {")
+	g.P("pool *", balancerPkg, ".RpcPool")
+	g.P("}")
+	g.P()
+
 	// NewClient factory.
 	if deprecated {
 		g.P(deprecationComment)
 	}
 	g.P("func New", servName, "Client (cc *", grpcPkg, ".ClientConn) ", servName, "Client {")
 	g.P("return &", unexport(servName), "Client{cc}")
+	g.P("}")
+	g.P()
+
+	g.P("func New", servName, "Pool (consulAddr, serverName string, capacity int, timeout time.Duration) (", servName, "Client, error)", " {")
+
+	g.P("resolver, err := ", balancerPkg, ".NewRpcPool", "(consulAddr, serverName, capacity, timeout*", timePkg, ".Second", ")")
+	g.P("if err != nil {")
+	g.P("return nil, err")
+	g.P("}")
+	g.P("return &", unexport(servName), "Pool{resolver}, nil")
 	g.P("}")
 	g.P()
 
@@ -227,7 +255,7 @@ func (g *grpc) generateService(file *generator.FileDescriptor, service *pb.Servi
 	if deprecated {
 		g.P(deprecationComment)
 	}
-	g.P("func Register", servName, "Server(s *", grpcPkg, ".Server, srv ", serverType, ") {")
+	g.P("func Register", servName, "Server(s *", mrpcPkg, ".Server, srv ", serverType, ") {")
 	g.P("s.RegisterService(&", serviceDescVar, `, srv)`)
 	g.P("}")
 	g.P()
@@ -341,7 +369,36 @@ func (g *grpc) generateClientMethod(servName, fullServName, serviceDescVar strin
 		g.P("return out, nil")
 		g.P("}")
 		g.P()
-		return
+
+	}
+
+	g.P("func (c *", unexport(servName), "Pool) ", g.generateClientSignature(servName, method), "{")
+	if !method.GetServerStreaming() && !method.GetClientStreaming() {
+		g.P("afterFun := ", metricsPkg, ".ClientRequestBegin", "(&", metricsPkg, ".ClientMeta", "{")
+		g.P("Ip: ", "\"\"", ",")
+		g.P("Server: ", strconv.Quote(fullServName), ",")
+		g.P("Method: ", strconv.Quote(fmt.Sprintf("/%s/%s", strconv.Quote(fullServName), servName)), ",")
+		g.P("})")
+		g.P("conn, closeFunc, err := c.pool.GetConnect(ctx)")
+		g.P("if err != nil {")
+		g.P("afterFun(&", metricsPkg, ".ClientMeta", "{Err: err})")
+		g.P("return nil, err")
+		g.P("}")
+		g.P("defer closeFunc()")
+		g.P(`err = conn.ClientConn.Invoke(ctx, "`, sname, `", in, out, opts...)`)
+		g.P("afterFun(&", metricsPkg, ".ClientMeta", "{Err: err})")
+		g.P("if err != nil { return nil, err }")
+		g.P("return out, nil")
+		g.P("}")
+		g.P()
+
+		g.P("out := new(", outType, ")")
+		g.P(`err := c.cc.Invoke(ctx, "`, sname, `", in, out, opts...)`)
+		g.P("if err != nil { return nil, err }")
+		g.P("return out, nil")
+		g.P("}")
+		g.P()
+
 	}
 	streamType := unexport(servName) + methName + "Client"
 	g.P("stream, err := c.cc.NewStream(ctx, ", descExpr, `, "`, sname, `", opts...)`)
@@ -459,20 +516,50 @@ func (g *grpc) generateServerMethod(servName, fullServName string, method *pb.Me
 	outType := g.typeName(method.GetOutputType())
 
 	if !method.GetServerStreaming() && !method.GetClientStreaming() {
-		g.P("func ", hname, "(srv interface{}, ctx ", contextPkg, ".Context, dec func(interface{}) error, interceptor ", grpcPkg, ".UnaryServerInterceptor) (interface{}, error) {")
+
+		g.P("func ", hname, "(srv interface{}, ctx ", contextPkg, ".Context", ", dec func(interface{}) error, interceptor ", grpcPkg, "UnaryServerInterceptor", ") (interface{}, error) {")
 		g.P("in := new(", inType, ")")
-		g.P("if err := dec(in); err != nil { return nil, err }")
-		g.P("if interceptor == nil { return srv.(", servName, "Server).", methName, "(ctx, in) }")
-		g.P("info := &", grpcPkg, ".UnaryServerInfo{")
+		g.P("afterFun := ", metricsPkg, ".ServerRequestBegin", "(&", metricsPkg, ".ServerMeta", "{")
+		g.P("Ip: ", "\"\"", ",")
+		g.P("Server: ", strconv.Quote(fullServName), ",")
+		g.P("Method: ", strconv.Quote(fmt.Sprintf("/%s/%s", strconv.Quote(fullServName), servName)), ",")
+		g.P("})")
+		g.P("if err := dec(in); err != nil {")
+		g.P("afterFun(&", metricsPkg, ".ServerMeta", "{Err:err})")
+		g.P("return nil, err")
+		g.P("}")
+		g.P("if interceptor == nil {")
+		g.P("a, e := srv.(", servName, "Server).", methName, "(ctx, in)")
+		g.P("afterFun(&", metricsPkg, ".ServerMeta", "{Err:e})")
+		g.P("return a, e")
+		g.P("}")
+		g.P("info := &", grpcPkg, ".UnaryServerInfo", "{")
 		g.P("Server: srv,")
 		g.P("FullMethod: ", strconv.Quote(fmt.Sprintf("/%s/%s", fullServName, methName)), ",")
 		g.P("}")
-		g.P("handler := func(ctx ", contextPkg, ".Context, req interface{}) (interface{}, error) {")
+		g.P("handler := func(ctx ", contextPkg, ".Context", ", req interface{}) (interface{}, error) {")
 		g.P("return srv.(", servName, "Server).", methName, "(ctx, req.(*", inType, "))")
 		g.P("}")
-		g.P("return interceptor(ctx, in, info, handler)")
+		g.P("i, e := interceptor(ctx, in, info, handler)")
+		g.P("afterFun(&", metricsPkg, ".ServerMeta", "{Err:e})")
+		g.P("return i, e")
 		g.P("}")
 		g.P()
+
+		//g.P("func ", hname, "(srv interface{}, ctx ", contextPkg, ".Context, dec func(interface{}) error, interceptor ", grpcPkg, ".UnaryServerInterceptor) (interface{}, error) {")
+		//g.P("in := new(", inType, ")")
+		//g.P("if err := dec(in); err != nil { return nil, err }")
+		//g.P("if interceptor == nil { return srv.(", servName, "Server).", methName, "(ctx, in) }")
+		//g.P("info := &", grpcPkg, ".UnaryServerInfo{")
+		//g.P("Server: srv,")
+		//g.P("FullMethod: ", strconv.Quote(fmt.Sprintf("/%s/%s", fullServName, methName)), ",")
+		//g.P("}")
+		//g.P("handler := func(ctx ", contextPkg, ".Context, req interface{}) (interface{}, error) {")
+		//g.P("return srv.(", servName, "Server).", methName, "(ctx, req.(*", inType, "))")
+		//g.P("}")
+		//g.P("return interceptor(ctx, in, info, handler)")
+		//g.P("}")
+		//g.P()
 		return hname
 	}
 	streamType := unexport(servName) + methName + "Server"
