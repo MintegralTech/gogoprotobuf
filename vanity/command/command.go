@@ -35,6 +35,7 @@ import (
 	"os"
 	"strings"
 
+	_ "github.com/MintegralTech/gogoprotobuf/protoc-gen-gogo/grpc"
 	_ "github.com/gogo/protobuf/plugin/compare"
 	_ "github.com/gogo/protobuf/plugin/defaultcheck"
 	_ "github.com/gogo/protobuf/plugin/description"
@@ -53,7 +54,6 @@ import (
 	_ "github.com/gogo/protobuf/plugin/unmarshal"
 	"github.com/gogo/protobuf/proto"
 	"github.com/gogo/protobuf/protoc-gen-gogo/generator"
-	_ "github.com/gogo/protobuf/protoc-gen-gogo/grpc"
 	plugin "github.com/gogo/protobuf/protoc-gen-gogo/plugin"
 )
 
