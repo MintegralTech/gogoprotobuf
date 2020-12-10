@@ -391,14 +391,7 @@ func (g *grpc) generateClientMethod(servName, fullServName, serviceDescVar strin
 		g.P("return out, nil")
 		g.P("}")
 		g.P()
-
-		g.P("out := new(", outType, ")")
-		g.P(`err := c.cc.Invoke(ctx, "`, sname, `", in, out, opts...)`)
-		g.P("if err != nil { return nil, err }")
-		g.P("return out, nil")
-		g.P("}")
-		g.P()
-
+		return
 	}
 	streamType := unexport(servName) + methName + "Client"
 	g.P("stream, err := c.cc.NewStream(ctx, ", descExpr, `, "`, sname, `", opts...)`)
