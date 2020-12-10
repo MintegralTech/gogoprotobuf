@@ -374,6 +374,7 @@ func (g *grpc) generateClientMethod(servName, fullServName, serviceDescVar strin
 
 	g.P("func (c *", unexport(servName), "Pool) ", g.generateClientSignature(servName, method), "{")
 	if !method.GetServerStreaming() && !method.GetClientStreaming() {
+		g.P("out := new(", outType, ")")
 		g.P("afterFun := ", metricsPkg, ".ClientRequestBegin", "(&", metricsPkg, ".ClientMeta", "{")
 		g.P("Ip: ", "\"\"", ",")
 		g.P("Server: ", strconv.Quote(fullServName), ",")
@@ -510,7 +511,7 @@ func (g *grpc) generateServerMethod(servName, fullServName string, method *pb.Me
 
 	if !method.GetServerStreaming() && !method.GetClientStreaming() {
 
-		g.P("func ", hname, "(srv interface{}, ctx ", contextPkg, ".Context", ", dec func(interface{}) error, interceptor ", grpcPkg, "UnaryServerInterceptor", ") (interface{}, error) {")
+		g.P("func ", hname, "(srv interface{}, ctx ", contextPkg, ".Context", ", dec func(interface{}) error, interceptor ", grpcPkg, ".UnaryServerInterceptor", ") (interface{}, error) {")
 		g.P("in := new(", inType, ")")
 		g.P("afterFun := ", metricsPkg, ".ServerRequestBegin", "(&", metricsPkg, ".ServerMeta", "{")
 		g.P("Ip: ", "\"\"", ",")
